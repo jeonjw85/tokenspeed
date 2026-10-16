@@ -285,7 +285,7 @@ def causal_conv1d_fn(
 ):
     """Select a prefill convolution leaf while preserving the original ABI."""
     kernel = select_kernel(
-        "attention",
+        "conv",
         "causal_conv1d_prefill",
         format_signature(x=dense_tensor_format(x.dtype)),
         traits={
@@ -326,7 +326,7 @@ def causal_conv1d_update(
 ):
     """Select a decode/tree convolution leaf for the supplied state indices."""
     kernel = select_kernel(
-        "attention",
+        "conv",
         "causal_conv1d_update",
         format_signature(x=dense_tensor_format(x.dtype)),
         traits={

@@ -28,7 +28,7 @@
 
 ``triton_causal_conv1d_prefill`` runs varlen prefill chunks and
 ``triton_causal_conv1d_update`` decode, chain verify and draft-tree steps;
-both are registered leaves of the ``attention`` family's
+both are registered leaves of the ``conv`` family's
 ``causal_conv1d_prefill`` / ``causal_conv1d_update`` modes, selected through
 ``tokenspeed_kernel.ops.conv``.
 """
@@ -419,7 +419,7 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
 
 
 @register_kernel(
-    "attention",
+    "conv",
     "causal_conv1d_prefill",
     name="triton_causal_conv1d_prefill",
     solution="triton",
@@ -1070,7 +1070,7 @@ def _causal_conv1d_tree_update(
 
 
 @register_kernel(
-    "attention",
+    "conv",
     "causal_conv1d_update",
     name="triton_causal_conv1d_update",
     solution="triton",
