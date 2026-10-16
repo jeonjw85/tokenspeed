@@ -2724,8 +2724,8 @@ def _precomputed_topk_route(
     )
 
 
-# Prefill tiles for FP8 activations, measured at Kimi K3 rank-0 shapes (8192-token chunks, 896
-# experts, top-16, so ~146 rows per expert). Neither GEMM saturates WMMA,
+# Prefill tiles for FP8 activations, measured at 8192-token chunks, 896
+# experts, top-16, so ~146 rows per expert. Neither GEMM saturates WMMA,
 # TDM, LDS or HBM; each program runs its load, LDS and WMMA phases mostly back
 # to back, so the tiles are chosen for how many programs stay resident and
 # how well they share L2.
