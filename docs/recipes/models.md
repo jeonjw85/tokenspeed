@@ -1225,8 +1225,13 @@ Beam (`model_type=beam`, `BeamForCausalLM`) is a mixture-of-experts model
 with 52 decoder layers: 9 full-attention layers and 43 sliding-window layers
 with a 512-token window. Its BF16, FP8 and NVFP4 checkpoints run with the same
 command: the checkpoint's own quantization config selects the path, with no
-flag. The [Beam recipe](beam.md) covers the defaults, the quantized paths, the
-chat format, the supported Hub revisions and the measurements.
+flag. Use these supported Hub revisions:
+
+| Checkpoint | Revision |
+| --- | --- |
+| BF16 | `f40a3a29` |
+| FP8 | `21052137` |
+| NVFP4 | `81a5ab6b` |
 
 The command below runs one TP8 replica over two 4-GPU nodes, as in the
 recipe's GB200 measurements. Run it on both nodes, changing only
@@ -1263,13 +1268,49 @@ Notes:
   `response_format` work, and `--enable-mixed-batch
   --prefill-graph-max-tokens 8192` runs a prompt chunk in the same step as the
   running decodes. Pass the same values on every node.
-- The preview drafter checkpoint declares 262,144 tokens of context: with it,
-  `--max-model-len 1048576` needs
-  `TOKENSPEED_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1` on every node. With the
-  drafter the default batch limit is 80 requests, not 160.
-- Name no `--reasoning-parser` or `--tool-call-parser`. The bundled Day-0
-  gateway then reads the output through the `response_template` that the
-  checkpoint's `tokenizer_config.json` declares.
+- The `reflection/Beam-1.0-501B-A23B-DFlash2` drafter at revision `8d26c952`
+  serves all three checkpoints. It declares 1,048,576 positions, so leave
+  `TOKENSPEED_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN` unset. With the drafter the
+  default batch limit is 80 requests, not 160.
+- Name no `--reasoning-parser` or `--tool-call-parser`. The bundled
+  `tokenspeed-smg==1.13.0.post20261016` that TokenSpeed pins reads the output
+  through the checkpoint's `response_template`.
+
+A cold first start compiles FlashInfer modules with nvcc into its JIT workspace
+(`FLASHINFER_WORKSPACE_BASE`, the home directory by default) and then
+autotunes kernels before CUDA graph capture. On a fresh GB200 machine the
+NVFP4 launch spent 2,340 seconds tuning and served the API after 45.5 minutes;
+pass `--engine-startup-timeout 5400`. Later starts reuse the JIT, cubin and
+autotuning caches; a matching restart tuned in 5 to 9 seconds.
+
+The standard source install does not include FlashInfer's prebuilt kernels.
+For an optional offline-first-start setup on GB200 (`sm100a`) with CUDA 13.0,
+install packages matching the installed `flashinfer-python` version while the
+node still has network access:
+
+```bash
+FI=$(python -c 'from importlib.metadata import version; print(version("flashinfer-python"))')
+python -m pip install --upgrade --no-deps \
+  --index-url https://flashinfer.ai/whl/cu130 \
+  "flashinfer-jit-cache==${FI}+cu130" \
+  "flashinfer-jit-cache-sm100a==${FI}+cu130" \
+  "https://github.com/flashinfer-ai/flashinfer/releases/download/v${FI}/flashinfer_cubin-${FI}-py3-none-any.whl"
+```
+
+API notes:
+- The bundled gateway defaults to `medium` reasoning effort (64). It accepts
+  `low`, `medium`, `high`, `xhigh` and `max`, which render 32, 64, 128, 256
+  and 512; any other value returns 400.
+- Keep `--grammar-backend xgrammar`. With it, the bundled gateway constrains
+  every Beam turn to Beam's output format, including tool calls under
+  `tool_choice: auto`, forced tool choice (`required` or a named function) and
+  JSON `response_format` with `json_schema`.
+
+For batches above 160, or above 80 with the drafter, set all three scheduling
+and graph flags. For 512 requests, use `--max-num-seqs 512`,
+`--max-cudagraph-capture-size 512` and
+`--cudagraph-capture-sizes 1 8 32 64 128 160 256 384 512`. Setting only the
+first one or two leaves larger decode batches outside the captured graph list.
 
 ## Tuning order
 
