@@ -16,6 +16,10 @@ The implementation reuses shared transformer/communication, attention, linear,
 normalization and expert layers. Treat each newly admitted fusion as a
 separate correctness and performance candidate.
 
+With `--layer-boundary-norm unfused`, each boundary applies its depth
+coefficients to both BF16 branches, materializes their BF16 sum, then runs
+the standalone FP32 RMSNorm and affine operation.
+
 The general shared MoE implementation uses Triton with the
 explicit `bf16_route_accum_fp32` policy. Automatic selection chooses this path
 wherever Beam's vendor MoE default (below) does not apply, for example under
@@ -23,6 +27,69 @@ TP16 or on another platform; on NVIDIA SM100 to SM103 the flag-free default is
 `flashinfer_trtllm`. Requesting FlashInfer-CUTLASS or another unsupported backend fails. Applying a
 scale to an already-finalized BF16 CUTLASS result does not recover scaling before
 the final cast.
+
+## AMD gfx950
+
+Beam supports BF16 and compressed-tensors dynamic W8A8 FP8 checkpoints on
+gfx950. Use explicit backends: `gluon_mha` for target and draft GQA attention,
+`triton` for BF16 experts, and `gluon` or `triton` for FP8 experts. NVIDIA's
+backend defaults and sandwich all-reduce fusion remain separate.
+
+For an eight-GPU FP8 target with a BF16 DFlash2 drafter:
+
+```bash
+ts serve --model <beam-fp8-checkpoint-dir> \
+  --tensor-parallel-size 8 --ep-size 1 \
+  --dtype bfloat16 --kv-cache-dtype bfloat16 \
+  --attention-backend gluon_mha --moe-backend gluon --all2all-backend none \
+  --sampling-backend triton_full --grammar-backend xgrammar \
+  --disable-tf32 --layer-boundary-norm unfused \
+  --max-model-len 262144 --max-num-seqs 16 --chunked-prefill-size 8192 \
+  --prefill-graph-max-tokens 8192 \
+  --max-cudagraph-capture-size 16 --cudagraph-capture-sizes 1 2 4 8 16 \
+  --gpu-memory-utilization 0.85 --disable-kvstore --disable-prefix-caching \
+  --enable-mixed-batch --speculative-algorithm DFLASH \
+  --speculative-draft-model-path <beam-dflash2-checkpoint-dir> \
+  --speculative-draft-model-quantization unquant \
+  --drafter-attention-backend gluon_mha \
+  --speculative-num-steps 15 --speculative-num-draft-tokens 16 \
+  --host 127.0.0.1 --port 8000
+```
+
+For a BF16 target, use its checkpoint and `--moe-backend triton` with the
+same attention, dtype and unfused-boundary settings. Omit the speculative
+arguments for target-only decoding. The context and memory fraction above
+are starting budgets, not a capacity guarantee; check the startup allocation
+for the chosen checkpoint and request lengths.
+
+The FP8 checkpoints retain their per-output-channel weight scales. Dense
+linears use the portable FP8 GEMM. The Gluon expert path keeps FP8 weights
+resident but converts their codes to BF16 projection operands; it is not
+native FP8 MFMA. The alternative `--moe-backend triton` uses the registered
+portable FP8 expert kernel. Both preserve Beam's explicit FP32 routing policy;
+they need separate numerical qualification rather than bitwise equivalence
+being assumed. The MXFP4 expert adapter is a separate path, not qualified by
+BF16 or FP8 results.
+
+`gluon_mha` supports the target's 6:1 and drafter's 5:1 GQA groups, cached
+extend, mixed batches and graph replay. The existing `gluon` attention name
+remains MLA-only. With `--attention-backend triton`, omit
+`--enable-mixed-batch`: that backend does not support mixed MHA batches.
+
+Use the gateway dependencies pinned by this checkout. Older gateways that
+do not recognize Jinja generation markers can use an explicit, gateway-only
+template override:
+
+```bash
+python -m tokenspeed.runtime.models.beam_chat_template \
+  --source <checkpoint-dir>/chat_template.jinja \
+  --output <new-file-outside-checkpoint-dir>
+```
+
+The helper accepts only the released template hash and never modifies the
+checkpoint. A template rendering override does not add missing reasoning or
+tool parsers to an older gateway. Check raw generation, parsed chat/tool APIs,
+numerical parity and performance independently before deployment.
 
 ## Serving
 
