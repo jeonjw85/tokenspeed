@@ -127,3 +127,21 @@ def test_attn_res_token_counts_reuse_compilation():
             expected, _, _ = _reference(sliced, valid_blocks, False)
             actual = _run(sliced, valid_blocks, False)
             torch.testing.assert_close(actual, expected, rtol=1.6e-2, atol=1.6e-2)
+
+
+@pytest.mark.parametrize("weight_view", ["odd_offset", "strided", "fp32"])
+def test_attn_res_rejects_weights_it_cannot_read_as_pairs(weight_view):
+    # Weights are read as 4-byte BF16 pairs; views that would misread every
+    # pair must be refused rather than silently mixed.
+    inputs = _inputs(4, 3, delta=False, write_block=False, seed=0)
+    weight = inputs["res_weight"]
+    if weight_view == "odd_offset":
+        storage = torch.empty(HIDDEN + 1, device="cuda", dtype=torch.bfloat16)
+        inputs["res_weight"] = storage[1:].copy_(weight)
+    elif weight_view == "strided":
+        storage = torch.empty(2 * HIDDEN, device="cuda", dtype=torch.bfloat16)
+        inputs["res_weight"] = storage[::2].copy_(weight)
+    else:
+        inputs["res_weight"] = weight.float()
+    with pytest.raises(ValueError, match="AttnRes"):
+        _run(inputs, 3, False)

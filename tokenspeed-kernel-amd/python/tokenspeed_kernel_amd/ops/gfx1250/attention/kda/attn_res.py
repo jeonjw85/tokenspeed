@@ -57,29 +57,13 @@ def _pack(even, odd):
 
 
 @gluon.jit
-def _load_pairs(ptr, offsets, mask, layout: gl.constexpr, NUM_WARPS: gl.constexpr):
-    """Load elements (2p, 2p + 1) for each pair index p as (even, odd) FP32."""
-    if ptr.dtype.element_ty == gl.bfloat16:
-        words = cdna5.buffer_load(
-            ptr.to(gl.pointer_type(gl.int32)), offsets.to(gl.int32), mask=mask, other=0
-        )
-        return _unpack(words)
-    else:
-        pair_layout: gl.constexpr = gl.BlockedLayout(
-            [_WORDS, 2], [32, 1], [NUM_WARPS, 1], [1, 0]
-        )
-        lanes = gl.arange(0, 2, layout=gl.SliceLayout(0, pair_layout))
-        pair_offsets = 2 * gl.expand_dims(
-            gl.convert_layout(offsets, gl.SliceLayout(1, pair_layout)), 1
-        ) + gl.expand_dims(lanes, 0)
-        pair_mask = gl.expand_dims(
-            gl.convert_layout(mask, gl.SliceLayout(1, pair_layout)), 1
-        )
-        values = cdna5.buffer_load(
-            ptr, pair_offsets.to(gl.int32), mask=pair_mask, other=0.0
-        ).to(gl.float32)
-        even, odd = gl.split(values)
-        return gl.convert_layout(even, layout), gl.convert_layout(odd, layout)
+def _load_pairs(ptr, offsets, mask):
+    """Load BF16 elements (2p, 2p + 1) for each pair index p as (even, odd) FP32."""
+    gl.static_assert(ptr.dtype.element_ty == gl.bfloat16, "pairs are BF16")
+    words = cdna5.buffer_load(
+        ptr.to(gl.pointer_type(gl.int32)), offsets.to(gl.int32), mask=mask, other=0
+    )
+    return _unpack(words)
 
 
 @gluon.jit
@@ -235,12 +219,8 @@ def gluon_attn_res_fwd_gfx1250(
         else:
             words = gl.permute(gl.reshape(words, [_BLOCK_P, BLOCK_ROWS]), [1, 0])
         words = gl.convert_layout(words, tile_layout, assert_trivial=True)
-        res_even, res_odd = _load_pairs(
-            res_weight, pairs, pair_mask, pair_layout, NUM_WARPS
-        )
-        score_even, score_odd = _load_pairs(
-            score_rms_weight, pairs, pair_mask, pair_layout, NUM_WARPS
-        )
+        res_even, res_odd = _load_pairs(res_weight, pairs, pair_mask)
+        score_even, score_odd = _load_pairs(score_rms_weight, pairs, pair_mask)
     prefix_words = cdna5.buffer_load(
         layer_residual.to(gl.pointer_type(gl.int32)),
         (token * (stride_layer_t // 2) + pairs).to(gl.int32),
@@ -254,9 +234,7 @@ def gluon_attn_res_fwd_gfx1250(
             mask=pair_mask,
             other=0,
         )
-    out_even, out_odd = _load_pairs(
-        output_rms_weight, pairs, pair_mask, pair_layout, NUM_WARPS
-    )
+    out_even, out_odd = _load_pairs(output_rms_weight, pairs, pair_mask)
 
     prefix_even, prefix_odd = _unpack(prefix_words)
     if HAS_DELTA:
@@ -395,8 +373,14 @@ def attn_res_rmsnorm_gfx1250(
         raise ValueError("gfx1250 AttnRes delta must match layer_residual")
     if layer_residual.stride(1) != 1 or block_residual.stride(2) != 1:
         raise ValueError("gfx1250 AttnRes requires a contiguous hidden dimension")
+    weights = (res_weight, score_rms_weight, output_rms_weight)
+    if any(
+        w.dtype != torch.bfloat16 or w.shape != (hidden,) or w.stride(0) != 1
+        for w in weights
+    ):
+        raise ValueError("gfx1250 AttnRes weights must be contiguous BF16 [H]")
     delta_tensor = layer_residual if delta is None else delta
-    pair_views = (layer_residual, delta_tensor, block_residual)
+    pair_views = (layer_residual, delta_tensor, block_residual, *weights)
     if any(t.data_ptr() % 4 for t in pair_views) or any(
         stride % 2 for t in pair_views for stride in t.stride()[:-1]
     ):
