@@ -23,7 +23,7 @@
 :func:`causal_conv1d_fn` (prefill) and :func:`causal_conv1d_update` (decode,
 chain verify and draft trees) select the depthwise causal conv in front of
 the Mamba / GDN recurrences, over a slot-indexed conv-window pool; the
-selected leaves are registered in ``conv/triton/causal_conv1d.py``.
+selected leaves are registered in ``conv/triton.py``.
 
 :func:`dflash2_grouped_conv` is independent of everything below it: a
 block-local grouped depthwise convolution for DFlash2's draft layers, with no
@@ -52,16 +52,17 @@ from __future__ import annotations
 
 import torch
 
-# Aliased because the conv.triton submodule import below rebinds the name ``triton``.
-from tokenspeed_kernel._triton import triton as _triton
+# Aliased because importing the conv.triton and conv._triton submodules below
+# rebinds the names ``triton`` and ``_triton`` in this package.
+from tokenspeed_kernel._triton import triton as _triton_lang
 from tokenspeed_kernel.ops.attention.gdn.triton import CausalConv1dPrefillMetadata
 from tokenspeed_kernel.ops.conv.triton import (
+    PAD_SLOT_ID,
     _inkling_ring_sconv_decode_kernel,
     _inkling_ring_sconv_prefill_kernel,
     dflash2_grouped_conv,
     select_prefill_config,
 )
-from tokenspeed_kernel.ops.conv.triton.causal_conv1d import PAD_SLOT_ID
 from tokenspeed_kernel.platform import pdl_enabled
 from tokenspeed_kernel.selection import select_kernel
 from tokenspeed_kernel.signature import dense_tensor_format, format_signature
@@ -209,7 +210,7 @@ def inkling_ring_sconv(
     enable_pdl = pdl_enabled()
     use_silu = activation in ("silu", "swish")
     block_t, block_d, num_warps, num_stages = select_prefill_config(T, D)
-    grid = (_triton.cdiv(T, block_t), _triton.cdiv(D, block_d))
+    grid = (_triton_lang.cdiv(T, block_t), _triton_lang.cdiv(D, block_d))
     kernel[grid](
         x,
         weight,
@@ -251,7 +252,7 @@ def inkling_ring_sconv(
         BLOCK_T=block_t,
         BLOCK_D=block_d,
         W=W,
-        W_POW2=_triton.next_power_of_2(W),
+        W_POW2=_triton_lang.next_power_of_2(W),
         num_warps=num_warps,
         num_stages=num_stages,
         **({"launch_pdl": True} if enable_pdl else {}),

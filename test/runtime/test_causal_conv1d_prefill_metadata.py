@@ -147,7 +147,7 @@ def test_conv_compiles_once_across_prefill_shapes():
     """Token totals, chunk-map offsets and output strides vary per prefill; none keys a binary."""
     from unittest.mock import patch
 
-    from tokenspeed_kernel.ops.conv.triton.causal_conv1d import (
+    from tokenspeed_kernel.ops.conv._triton.causal_conv1d import (
         _causal_conv1d_fwd_kernel,
     )
 
